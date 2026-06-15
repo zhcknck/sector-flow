@@ -1,0 +1,155 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<!-- CSP 縱深防禦(2026-06-13):script 鎖同源,注入的內聯 script 不執行——
+     即使 escapeHtml 哪天破洞,XSS 主向量被瀏覽器擋下。style 須留 unsafe-inline
+     (d3 大量寫 inline style 屬性);img 須留 data:(favicon)+blob:(PNG 匯出
+     把 SVG 轉 blob 圖)。frame-ancestors 需 HTTP 頭,GitHub Pages 不可設,從缺。 -->
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self'; base-uri 'self'; object-src 'none'; form-action 'none'">
+<meta name="description" content="台股主題板塊三大法人資金流向觀測:泡泡圖、四象限、排行榜、量價背離、大跌日淨買。純觀測工具,零買賣建議。">
+<!-- link-only(2026-06-15):noindex 讓搜尋引擎不收錄(只給朋友看,連結照樣能開)。
+     GitHub Pages 專案頁的 robots.txt 須在網域根(zhcknck.github.io/robots.txt)才被讀,
+     子路徑放了也無效——故用 meta noindex(路徑無關、頁面層級確實)。
+     og 分享卡片不受影響:FB/Twitter 抓 og 標籤不看 noindex,丟連結給朋友縮圖照出。 -->
+<meta name="robots" content="noindex, nofollow">
+<meta property="og:title" content="台股板塊資金流向觀測">
+<meta property="og:description" content="資金流向的望遠鏡,不是選股機器。主題板塊的三大法人資金流:誰在加速、誰在退潮、誰在買。零評分、零買賣建議。">
+<meta property="og:url" content="https://zhcknck.github.io/sector-flow/">
+<meta property="og:type" content="website">
+<meta property="og:image" content="https://zhcknck.github.io/sector-flow/og-image.png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta property="og:image:alt" content="台股板塊資金流向觀測——四象限泡泡圖示意">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:image" content="https://zhcknck.github.io/sector-flow/og-image.png">
+<title>台股板塊資金流向觀測</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><circle cx='50' cy='50' r='42' fill='%23D85A30'/></svg>">
+<link rel="stylesheet" href="style.css">
+<script src="vendor/d3.min.js" defer></script>
+<script src="lib.js" defer></script>
+</head>
+<body>
+<header>
+  <div class="title-block">
+    <h1>台股板塊資金流向觀測</h1>
+    <div id="meta" class="meta">載入中…</div>
+  </div>
+  <nav id="tabs">
+    <button class="tab active" data-view="bubble">泡泡圖</button>
+    <button class="tab" data-view="changes">今日變化</button>
+    <button class="tab" data-view="rank">排行榜</button>
+    <button class="tab" data-view="cp">量價背離</button>
+    <button class="tab" data-view="dip">大跌日淨買</button>
+    <button class="tab" data-view="abnormal">異常大買賣</button>
+    <button class="tab" data-view="dual">同買</button>
+  </nav>
+  <div id="search-wrap">
+    <input id="search" type="search" placeholder="搜尋板塊或個股…" autocomplete="off">
+    <div id="search-dropdown" class="hidden"></div>
+  </div>
+  <button id="theme-toggle" title="切換深/淺色" aria-label="切換深淺色">🌙</button>
+</header>
+
+<div id="stale-banner" class="hidden"></div>
+
+<main>
+  <section id="view-bubble" class="view">
+    <div class="bubble-layout">
+      <aside id="quad-cards"></aside>
+      <div class="chart-wrap">
+        <div id="legend">
+          <span><i class="dot q-主力"></i>主力（流入且加速）</span>
+          <span><i class="dot q-輪動"></i>輪動（流入但放緩）</span>
+          <span><i class="dot q-觀望"></i>觀望（沉寂）</span>
+          <span><i class="dot q-退潮"></i>退潮（流出）</span>
+          <span class="hint" id="hist-controls">
+            <label for="hist-slider">時間軸</label>
+            <!-- 文案帶「回放」字樣:切的是滑桿範圍,不是近5日/近20日口徑窗
+                 (兩輪實測都把「60 日」誤讀成切資料窗) -->
+            <select id="hist-range" title="回放範圍(不影響指標口徑)">
+              <option value="20" selected>回放 20 日</option>
+              <option value="60">回放 60 日</option>
+              <option value="all">回放全部</option>
+            </select>
+            <input type="range" id="hist-slider" min="0" max="19" value="19" step="1">
+            <button id="hist-play" title="回放">▶</button>
+            <button id="hist-latest" title="跳至最新交易日">⏭</button>
+            <span id="hist-date"></span>
+            <button id="fit-view" title="縮放至目前資料範圍">⌖ 聚焦</button>
+            <button id="reset-view" title="重置縮放平移並清除搜尋">⌂ 重置視角</button>
+            <button id="export-png" title="下載目前畫面 PNG">⬇ PNG</button>
+          </span>
+        </div>
+        <div id="chart"></div>
+      </div>
+    </div>
+  </section>
+
+  <section id="view-changes" class="view hidden">
+    <p class="view-note">📋 資金變化摘要,切換口徑:<span id="changes-period-toggle"><button data-p="day" class="active">日</button><button data-p="week">週</button></span>　<span class="meta-dim">日＝相對前一交易日、週＝相對 5 交易日前;純資金事實,非評分、非選股建議;金額為估算(股數 × 收盤)。</span></p>
+    <div id="changes-content"></div>
+  </section>
+
+  <section id="view-rank" class="view hidden">
+    <p class="view-note">狀態定義：<i class="dot q-主力"></i>主力＝資金加速流入　<i class="dot q-輪動"></i>輪動＝流入但放緩　<i class="dot q-觀望"></i>觀望＝資金沉寂　<i class="dot q-退潮"></i>退潮＝資金流出。點欄位標題可排序。<button class="csv-btn" data-view="view-rank" data-name="rank">⬇ CSV</button></p>
+    <table class="data-table" id="rank-table">
+      <thead><tr>
+        <th data-key="name">板塊</th><th data-key="quadrant">狀態</th><th class="num" data-key="day_net">當日(億)</th>
+        <th class="num" data-key="cum_5">近5日(億)</th><th class="num" data-key="cum_20">近20日(億)</th>
+        <th class="num" data-key="acceleration">加速度(億/天)</th><th class="num" data-key="streak">連續</th><th class="num" data-key="price_change_5_pct">近5日漲跌(%)</th><th class="num" data-key="stock_count">檔數</th>
+      </tr></thead>
+      <tbody></tbody>
+    </table>
+  </section>
+
+  <section id="view-cp" class="view hidden">
+    <p class="view-note">⚡ 呈現「近 5 日被淨買進」的板塊，依價格是否同步分兩組——逆勢吸金（被買但價跌或持平）與上漲吸金。<br>
+    <span class="meta-dim">事實分組，非評分；各組依近 5 日累計淨買超降冪，長條同尺度。</span></p>
+    <div id="cp-content"></div>
+  </section>
+
+  <section id="view-dip" class="view hidden">
+    <p class="view-note">⚓ 大盤單日跌幅超過閾值的交易日，列出當日仍被法人淨買進的板塊。閾值：<input type="number" id="dip-threshold" value="-1" step="0.1" max="0"> %（同時顯示觀測窗內最近一次觸發）</p>
+    <div id="dip-content"></div>
+  </section>
+
+  <section id="view-dual" class="view hidden">
+    <p class="view-note">外資與投信於選定窗內皆淨買超（或皆淨賣超）的板塊。判定用法人拆分輸出值（嚴格 &gt;0 / &lt;0，0 不入列）；自營欄僅供參考、不入篩選；金額為估算（股數 × 收盤）。
+      <span id="dual-win-toggle"><button data-w="5" class="active">近 5 日</button><button data-w="20">近 20 日</button></span><button class="csv-btn" data-view="view-dual" data-name="dual">⬇ CSV</button></p>
+    <div id="dual-content"></div>
+  </section>
+
+  <section id="view-abnormal" class="view hidden">
+    <p class="view-note">⚡ 定義：個股當日法人淨買（賣）超 ≥1 億，且為近 20 日同方向最大。僅列資料日當日；觀測範圍＝板塊映射內個股。<span id="abnormal-note"></span><button class="csv-btn" data-view="view-abnormal" data-name="abnormal">⬇ CSV</button></p>
+    <div id="abnormal-content"></div>
+  </section>
+</main>
+
+<div id="panel-overlay" class="panel-overlay"></div>
+
+<aside id="panel" aria-live="polite">
+  <div class="panel-head">
+    <h2 id="panel-title"></h2>
+    <button id="panel-close" aria-label="關閉">×</button>
+  </div>
+  <div id="panel-stats"></div>
+  <div id="panel-spark"></div>
+  <table class="data-table">
+    <thead><tr><th>股號</th><th>名稱</th><th class="num">當日漲跌</th><th class="num">當日買超(億)</th></tr></thead>
+    <tbody id="panel-stocks"></tbody>
+  </table>
+</aside>
+
+<div id="tooltip" class="hidden"></div>
+
+<footer>
+  <p id="coverage-note" class="hidden"></p>
+  <p>本工具呈現三大法人合計買賣超（估算金額 = 淨買賣超股數 × 當日收盤價），不代表市場全體資金流向。
+  法人可能同時為對沖或調倉目的操作，「買超」≠「看多」。本頁為純觀測資訊，不構成任何買賣建議。</p>
+</footer>
+
+<script src="app.js" defer></script>
+</body>
+</html>
